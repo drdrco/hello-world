@@ -3,26 +3,22 @@ from os.path import join
 import struct
 from socket import *
 import hashlib, math
-from tqdm import tqdm
-import threading
 from threading import Thread
 import time
 import multiprocessing
 from multiprocessing import Process
 import json
+import zipfile
 
-ip = '127.0.0.1'
-ip = '192.168.113.3'
 port = 23451
 file_dir = 'files'
-block_size = 1024*1024*2
+block_size = 1024*1024*5
 neighbor_list = ['192.168.113.3', '192.168.254.3']
 mtimeDic={}
 
 
 def get_file_size(filename):
     return os.path.getsize(join(file_dir, filename))
-
 
 def get_file_block(filename, block_index):
     global block_size
@@ -32,6 +28,13 @@ def get_file_block(filename, block_index):
     f.close()
     return file_block
 
+def get_zip_block(filename, block_index):
+    global block_size
+    f = open(filename, 'rb')
+    f.seek(block_index * block_size)
+    file_block = f.read(block_size)
+    f.close()
+    return file_block
 
 def make_file_block(filename, block_index):
     file_block = get_file_block(filename, block_index)
@@ -73,6 +76,23 @@ def msg_parse(msg, file_list, conn):
         filename = header_b[12:].decode()
         print('uodate file : ' + filename)
         return updateBlock(filename,endpoint)
+    if client_operation_code == 4:  # ask for zipfile
+        print('Asking for zip file')
+        filename = header_b[4:].decode()
+        print('asking for zip file : ' + filename)
+        ziplefting = filename+'.zipleft'
+        zipname = filename+'.zip'
+        while os.path.exists(ziplefting):
+            pass
+        print('compression finally done!!!!!!!!!!!!!!!')
+        file_size = os.path.getsize(zipname)
+        total_block_number = math.ceil(file_size / block_size)
+        lastfile = file_size % block_size
+        header = struct.pack('!IQ', lastfile, total_block_number)
+        conn.sendall(header)
+        for i in range(total_block_number):
+            conn.sendall(get_zip_block(zipname,i))
+        return 1
 
 def accept_message(conn, file_list):
     print('accepting thread start')
@@ -126,9 +146,8 @@ def make_get_file_list_header():
     header_length = len(header)
     return struct.pack('!I', header_length) + header
 
-
-def make_get_file_information_header(filename):
-    operation_code = 0
+def makeZipfile_header(filename):
+    operation_code = 4
     header = struct.pack('!I', operation_code)
     header_length = len(header + filename.encode())
     return struct.pack('!I', header_length) + header + filename.encode()
@@ -147,6 +166,36 @@ def updateFile(filename, endpoint):
     header = struct.pack('!IQ', operation_code, endpoint)
     header_length = len(header + filename.encode())
     return struct.pack('!I', header_length) + header + filename.encode()
+
+def compressZip(file):
+    print('start to compress large file: '+file)
+    zipname = file + '.zip'
+    leftingName= file+'.zipleft'
+    if os.path.exists(zipname):
+        if not os.path.exists(leftingName):
+            print('zip already done')
+            return
+    f=open(leftingName, 'w')
+    f.close()
+
+    zip = zipfile.ZipFile(zipname, 'w', zipfile.ZIP_DEFLATED)
+    zip.write(join(file_dir, file))
+    zip.close
+    print('file compress complete!')
+    os.remove(leftingName)
+
+
+def extractZip(file):
+    print('starting to extract file:'+ file)
+    zipname = file + '.zip'
+    zip = zipfile.ZipFile(zipname, 'r', zipfile.ZIP_DEFLATED)
+    zip.extract(join(file_dir,file))
+    zip.close
+    print('zip file is extracted')
+
+
+
+
 
 
 def getTcpMessage(client, buffer, bufFlag):
@@ -168,6 +217,42 @@ def getTcpMessage(client, buffer, bufFlag):
     return msg, buffer, bufFlag
 
 
+def getzipFile(neighborIp, file):
+    client = socket(AF_INET, SOCK_STREAM)
+    while True:
+        # try:
+            client.connect((neighborIp, 23451))
+            client.send(makeZipfile_header(file))
+            msg=client.recv(12)
+            while len(msg)<12:
+                msg=msg+client.recv(12-len(msg))
+            lastfile = struct.unpack('!I', msg[:4])[0]
+            blockNum = struct.unpack('!Q', msg[4:])[0]
+            print(lastfile)
+            print(blockNum)
+            zipname = file + '.zip'
+            f = open(zipname, 'wb')
+            for i in range(blockNum-1):
+                content = client.recv(block_size)
+                while len(content)<block_size:
+                    content =content+client.recv(block_size-len(content))
+                f.write(content)
+            content = client.recv(lastfile)
+            while len(content) < lastfile:
+                content = content + client.recv(lastfile - len(content))
+            f.write(content)
+            f.close()
+            print(file+".zip download is completed")
+            logname = file+'.log'
+            log=open(logname, 'w')
+            log.close()
+            extractZip(file)
+            os.remove(logname)
+            break
+
+        # except:
+        #     print('connection for zip has error!!!!!!!!!!!!!')
+        #     continue
 
 def send_connections(neighborIp, file_list, requiredFile1_list):
     client = socket(AF_INET, SOCK_STREAM)
@@ -196,6 +281,11 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                             os.mkdir(target_dir)
                     lastfile = fileDictionary[file][0]
                     blockNum = fileDictionary[file][1]
+                    if blockNum >120:
+                        askZipProcess = Process(target=getzipFile, args=(neighborIp,file,))
+                        askZipProcess.daemon = True
+                        askZipProcess.start()
+                        continue
                     logname = file.replace('/', '') + ".log"
 
                     if os.path.exists(logname):
@@ -278,9 +368,6 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                             newlist[2] = 1
                             file_list[mfile] = newlist
 
-
-
-
             except:
                 print('connection with server:' + neighborIp + 'has an error, delete the connection')
                 neighbor_alive = 0
@@ -305,8 +392,9 @@ if __name__ == '__main__':
     mgr1 = multiprocessing.Manager()
     requiredFile1_list = mgr1.list()
 
+
     serverProcess = Process(target=accept_connections, args=(file_list,))
-    serverProcess.start()#start a server process to serve the connection from others
+    serverProcess.start() #start a server process to serve the connection from others
 
     for neighborIp in neighbor_list:
         clientProcess = Process(target=send_connections, args=(neighborIp, file_list, requiredFile1_list))
@@ -341,6 +429,10 @@ if __name__ == '__main__':
             if not os.path.exists(logname):
                 flist=[]
                 file_size = get_file_size(file)
+                if file_size>500000000:
+                    zipProcess = Process(target=compressZip, args=(file,))
+                    zipProcess.daemon = True
+                    zipProcess.start()
                 total_block_number = math.ceil(file_size / block_size)
                 lastfile = file_size % block_size
                 startdata=math.ceil(file_size*0.15)
@@ -361,3 +453,5 @@ if __name__ == '__main__':
                 file_list[modifiedFile]=newlist
                 print(file_list[modifiedFile])
                 mtimeDic[modifiedFile]=newmtime
+
+        time.sleep(0.02)
