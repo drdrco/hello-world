@@ -1,4 +1,4 @@
-
+import argparse
 import os
 from os.path import join
 import struct
@@ -14,7 +14,7 @@ import zipfile
 port = 23451
 file_dir = 'files'
 block_size = 1024*1024*5
-neighbor_list = ['192.168.113.3','192.168.77.3']
+neighbor_list = ['192.168.164.3','192.168.101.3']
 mtimeDic={}
 
 
@@ -119,6 +119,7 @@ def accept_message(conn, file_list):
 
 def accept_connections(file_list):
     server = socket(AF_INET, SOCK_STREAM)
+    server.setsockopt(SOL_SOCKET,SO_REUSEADDR,1)
     server.bind(("", port))
     server.listen(6)
     print('accepting conncection service start')
@@ -279,11 +280,11 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                             os.mkdir(target_dir)
                     lastfile = fileDictionary[file][0]
                     blockNum = fileDictionary[file][1]
-                    # if blockNum >120:
-                    #     askZipProcess = Process(target=getzipFile, args=(neighborIp,file,))
-                    #     askZipProcess.daemon = True
-                    #     askZipProcess.start()
-                    #     continue
+                    if blockNum >120:
+                        askZipProcess = Process(target=getzipFile, args=(neighborIp,file,))
+                        askZipProcess.daemon = True
+                        askZipProcess.start()
+                        continue
                     leftingname = file+'.lefting'
 
                     if os.path.exists(join(file_dir, leftingname)):
@@ -366,6 +367,7 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
 
         else:
             try:
+                print('connecting: ' + neighborIp)
                 client.connect((neighborIp, 23451))
                 neighbor_alive = 1
             except:
@@ -376,8 +378,19 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                 bufFlag = 0
                 continue
 
+def _argparse():
+    parser = argparse.ArgumentParser(description="This is description!")
+    parser.add_argument('--ip', action='store', required=True,
+    dest='ip', help='The ip address of the neighbors')
+    # parser.add_argument('--server', action='store', required=True,
+    # dest='server', help='The hostname of server')
+    return parser.parse_args()
 
 if __name__ == '__main__':
+    parser = _argparse()
+    print('IP:', type(parser.ip))
+    neighbor_list=parser.ip.split(',')
+    print(neighbor_list)
     mgr = multiprocessing.Manager()
     file_list = mgr.dict()
     mgr1 = multiprocessing.Manager()
@@ -408,38 +421,35 @@ if __name__ == '__main__':
                         continue
                     if innerfilename in file_list:
                         break
-                    logname = innerfilename.replace('/', '') + '.log'
-                    if not os.path.exists(logname):
-                        flist = []
-                        file_size = get_file_size(innerfilename)
-                        total_block_number = math.ceil(file_size / block_size)
-                        startdata = math.ceil(file_size * 0.15)
-                        lastfile = file_size % block_size
-                        flist.append(lastfile)
-                        flist.append(total_block_number)
-                        flist.append(0)
-                        flist.append(startdata)
-                        file_list[innerfilename] = flist
-                        print(innerfilename + " is added in the current fileList")
+                    flist = []
+                    file_size = get_file_size(innerfilename)
+                    total_block_number = math.ceil(file_size / block_size)
+                    startdata = math.ceil(file_size * 0.15)
+                    lastfile = file_size % block_size
+                    flist.append(lastfile)
+                    flist.append(total_block_number)
+                    flist.append(0)
+                    flist.append(startdata)
+                    file_list[innerfilename] = flist
+                    print(innerfilename + " is added in the current fileList")
                 continue
-            logname = file + ".log"
-            if not os.path.exists(logname):
-                flist=[]
-                file_size = get_file_size(file)
-                if file_size>500000000:
-                    zipProcess = Process(target=compressZip, args=(file,))
-                    zipProcess.daemon = True
-                    zipProcess.start()
-                total_block_number = math.ceil(file_size / block_size)
-                lastfile = file_size % block_size
-                startdata=math.ceil(file_size*0.15)
-                flist.append(lastfile)
-                flist.append(total_block_number)
-                flist.append(0)
-                flist.append(startdata)
-                file_list[file] = flist
-                mtimeDic[file]=os.path.getmtime(filepath)
-                print(file + " is added in the current fileList")
+
+            flist = []
+            file_size = get_file_size(file)
+            if file_size > 500000000:
+                zipProcess = Process(target=compressZip, args=(file,))
+                zipProcess.daemon = True
+                zipProcess.start()
+            total_block_number = math.ceil(file_size / block_size)
+            lastfile = file_size % block_size
+            startdata = math.ceil(file_size * 0.15)
+            flist.append(lastfile)
+            flist.append(total_block_number)
+            flist.append(0)
+            flist.append(startdata)
+            file_list[file] = flist
+            mtimeDic[file] = os.path.getmtime(filepath)
+            print(file + " is added in the current fileList")
 
         for modifiedFile in mtimeDic.keys():
             mfilepath = join(file_dir, modifiedFile)
