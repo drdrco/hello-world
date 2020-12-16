@@ -1,3 +1,4 @@
+
 import os
 from os.path import join
 import struct
@@ -13,7 +14,7 @@ import zipfile
 port = 23451
 file_dir = 'files'
 block_size = 1024*1024*5
-neighbor_list = ['192.168.113.3', '192.168.254.3']
+neighbor_list = ['192.168.113.3','192.168.77.3']
 mtimeDic={}
 
 
@@ -39,7 +40,7 @@ def get_zip_block(filename, block_index):
 def make_file_block(filename, block_index):
     file_block = get_file_block(filename, block_index)
     header = struct.pack('!Q', block_index)
-    print(filename, block_index)
+    # print(filename, block_index)
     return header + file_block
 
 
@@ -62,7 +63,7 @@ def msg_parse(msg, file_list, conn):
     header_b = msg[4:4 + header_length]  # 取header
     client_operation_code = struct.unpack('!I', header_b[:4])[0]  # 取客户操作符
     if client_operation_code == 2:  # get file list
-        print('list send')
+        #print('list send')
         return make_return_file_list_header(file_list)
     if client_operation_code == 1:  # send file block
         block_index_from_client = struct.unpack('!Q', header_b[4:12])[0]
@@ -70,6 +71,9 @@ def msg_parse(msg, file_list, conn):
         print('send file : ' + filename)
         for i in range(block_index_from_client, math.ceil(get_file_size(filename) / block_size)):
             conn.sendall(make_file_block(filename, i))
+            print(filename+ ' blockNumber: '+str(i)+' is sent!')
+        print(filename+' is all sent to peers!!')
+        print('************************')
         return 1
     if client_operation_code == 3:  # partial update the file
         endpoint = struct.unpack('!Q', header_b[4:12])[0]
@@ -96,25 +100,14 @@ def msg_parse(msg, file_list, conn):
 
 def accept_message(conn, file_list):
     print('accepting thread start')
-    buffer = b''
-    bufFlag = 0
     while True:
-        time.sleep(1)
         try:
-            if bufFlag == 1:
-                msg = buffer
-            else:
-                msg = conn.recv(24)
-                header_length_b = msg[:4]
-                header_length = struct.unpack('!I', header_length_b)[0]
-                while len(msg) < header_length + 4:
-                    msg = msg + conn.recv(header_length + 4 - len(msg))
-                if len(msg) <= header_length + 4:
-                    bufFlag = 0
-                else:
-                    bufFlag = 1
-                    buffer = msg[header_length + 4:]
-                    msg = msg[: header_length + 4]
+            msg = conn.recv(4)
+            while len(msg) < 4:
+                msg = msg + conn.recv(4 - len(msg))
+            header_length = struct.unpack('!I', msg[:4])[0]
+            while len(msg) < header_length + 4:
+                msg = msg + conn.recv(header_length + 4 - len(msg))
             return_msg = msg_parse(msg, file_list, conn)
             if return_msg != 1:
                 conn.send(return_msg)
@@ -220,7 +213,8 @@ def getTcpMessage(client, buffer, bufFlag):
 def getzipFile(neighborIp, file):
     client = socket(AF_INET, SOCK_STREAM)
     while True:
-        # try:
+        try:
+            print('try to get zip file: '+ file+ ' from '+ neighborIp)
             client.connect((neighborIp, 23451))
             client.send(makeZipfile_header(file))
             msg=client.recv(12)
@@ -250,9 +244,9 @@ def getzipFile(neighborIp, file):
             os.remove(logname)
             break
 
-        # except:
-        #     print('connection for zip has error!!!!!!!!!!!!!')
-        #     continue
+        except:
+            print('connection for zip has error!!!!!!!!!!!!!')
+            continue
 
 def send_connections(neighborIp, file_list, requiredFile1_list):
     client = socket(AF_INET, SOCK_STREAM)
@@ -263,11 +257,15 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
             try:
                 client.send(make_get_file_list_header())
                 length = client.recv(4)
+                while len(length)<4:
+                    length=length+client.recv(4-len(length))
                 header_length = struct.unpack('!I', length)[0]
                 msg = client.recv(header_length)
+                while len(msg)<header_length:
+                    msg = msg+client.recv(header_length-len(msg))
                 fileDictionary = json.loads(msg.decode(), strict=False)
                 requiredFile_list = [file for file in fileDictionary.keys() if file not in file_list.keys()]
-                print(requiredFile_list)
+                # print(requiredFile_list)
                 for file in requiredFile_list:
                     if file not in requiredFile1_list:
                         requiredFile1_list.append(file)
@@ -281,33 +279,28 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                             os.mkdir(target_dir)
                     lastfile = fileDictionary[file][0]
                     blockNum = fileDictionary[file][1]
-                    if blockNum >120:
-                        askZipProcess = Process(target=getzipFile, args=(neighborIp,file,))
-                        askZipProcess.daemon = True
-                        askZipProcess.start()
-                        continue
-                    logname = file.replace('/', '') + ".log"
+                    # if blockNum >120:
+                    #     askZipProcess = Process(target=getzipFile, args=(neighborIp,file,))
+                    #     askZipProcess.daemon = True
+                    #     askZipProcess.start()
+                    #     continue
+                    leftingname = file+'.lefting'
 
-                    if os.path.exists(logname):
-                        l = open(logname, 'rb')
-                        l.seek(-8, 2)
-                        log = l.read()
-                        log = struct.unpack('!Q', log)[0]
-                        print(log)
-                        l.close()
-                        f = open(join(file_dir, file), 'rb+')
-                        f.seek((log) * block_size)
-                        l = open(logname, 'ab')
-                        client.send(make_get_fil_block_header(file, log))
-                        for block in range(log, blockNum - 1):
+                    if os.path.exists(join(file_dir, leftingname)):
+                        donepart = os.path.getsize(join(file_dir, leftingname))
+                        resumeBlock = math.ceil(donepart / block_size)
+                        f = open(join(file_dir, leftingname), 'rb+')
+                        f.seek((resumeBlock) * block_size)
+                        print('resume from breakpoint: '+resumeBlock)
+                        client.send(make_get_fil_block_header(file, resumeBlock))
+                        for block in range(resumeBlock, blockNum - 1):
                             msg = client.recv(8 + block_size)
                             while len(msg) < 8 + block_size:
                                 msg = msg + client.recv(8 + block_size - len(msg))
                             block_index = struct.unpack('!Q', msg[:8])[0]
                             blockFile = msg[8:]
                             f.write(blockFile)
-                            print(block_index)
-                            l.write(struct.pack('!Q', block_index))
+                            print('BLock index: ' + str(block_index) + ' of file: ' + file + ' from peer: ' + neighborIp + ' is done')
 
                         # last package:
                         msg = client.recv(block_size + 24)
@@ -316,14 +309,13 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                         block_index = struct.unpack('!Q', msg[:8])[0]
                         blockFile = msg[8:]
                         f.write(blockFile)
-                        l.write(struct.pack('!Q', block_index))
-                        l.close()
                         f.close()
                         file_list[file] = [lastfile,blockNum,0,fileDictionary[file][3]]
-                        os.remove(logname)
+                        os.rename(join(file_dir, leftingname), join(file_dir, file))
+                        print('File downloading: ' + file + ' from peer: ' + neighborIp + ' is completed!!!!!!')
+                        print('##########################################')
                     else:
-                        with open(logname, 'wb') as logrecord:
-                            with open(join(file_dir, file), 'wb')as f:
+                            with open(join(file_dir, leftingname), 'wb')as f:
                                 client.send(make_get_fil_block_header(file, 0))
 
                                 for block in range(0, blockNum - 1):
@@ -334,27 +326,25 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                                     blockFile = msg[8:]
                                     f.write(blockFile)
                                     # f.flush()
-                                    print(block_index)
-                                    logrecord.write(struct.pack('!Q', block_index))
-                                    # logrecord.flush()
+                                    print('BLock index: '+str(block_index)+ ' of file: '+file+ ' from peer: '+neighborIp+' is done')
 
                                 # last package:
                                 msg = client.recv(block_size + 24)
                                 while len(msg) < lastfile + 8:
                                     msg += client.recv(lastfile + 8 - len(msg))
-                                block_index = struct.unpack('!Q', msg[:8])[0]
+                                # block_index = struct.unpack('!Q', msg[:8])[0]
                                 blockFile = msg[8:]
                                 f.write(blockFile)
-                                print('hhhhhhhhhh')
-                                logrecord.write(struct.pack('!Q', block_index))
-                                logrecord.close()
                                 f.close()
                                 file_list[file] = [lastfile,blockNum,0,fileDictionary[file][3]]
-                                os.remove(logname)
+                                os.rename(join(file_dir,leftingname),join(file_dir,file))
+                                print('File downloading: '+file+' from peer: '+neighborIp+' is completed!!!!!!')
+                                print('##########################################')
 
                 for mfile in fileDictionary.keys():
                     if fileDictionary[mfile][2]==1:
                         if file_list[mfile][2] != fileDictionary[mfile][2]:
+                            print('Need update for file: '+mfile+ ' from peer: '+neighborIp)
                             update = fileDictionary[mfile][3]
                             f = open(join(file_dir, mfile), 'rb+')
                             f.seek(0)
@@ -367,6 +357,7 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                             newlist = file_list[mfile]
                             newlist[2] = 1
                             file_list[mfile] = newlist
+                            print('Successfully update file: '+mfile+ ' from peer: '+neighborIp)
 
             except:
                 print('connection with server:' + neighborIp + 'has an error, delete the connection')
@@ -404,11 +395,17 @@ if __name__ == '__main__':
         currentList = os.listdir(file_dir)
         newFile_list = [file for file in currentList if file not in file_list.keys()]
         for file in newFile_list:
+            components = file.split('.')
+            if components[-1]=='lefting':
+                continue
             filepath = join(file_dir, file)
             if os.path.isdir(filepath):
                 fileInDir = os.listdir(filepath)
                 for innerfile in fileInDir:
                     innerfilename = join(file, innerfile)
+                    components = innerfile.split('.')
+                    if components[-1] == 'lefting':
+                        continue
                     if innerfilename in file_list:
                         break
                     logname = innerfilename.replace('/', '') + '.log'
