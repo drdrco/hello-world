@@ -12,7 +12,7 @@ import json
 import zipfile
 
 port = 23451
-file_dir = 'files'
+file_dir = 'share'
 block_size = 1024*1024*5
 neighbor_list = ['192.168.164.3','192.168.101.3']
 mtimeDic={}
@@ -121,12 +121,12 @@ def accept_connections(file_list):
     server = socket(AF_INET, SOCK_STREAM)
     server.setsockopt(SOL_SOCKET,SO_REUSEADDR,1)
     server.bind(("", port))
-    server.listen(6)
+    server.listen(20)
     print('accepting conncection service start')
     while True:
         try:
             conn, address = server.accept()
-            t = Process(target=accept_message, args=(conn, file_list,))
+            t = Thread(target=accept_message, args=(conn, file_list,))
             t.start()
         except:
             print('server connection error')
@@ -191,7 +191,6 @@ def extractZip(file):
 
 
 
-
 def getTcpMessage(client, buffer, bufFlag):
     if bufFlag == 1:
         msg = buffer
@@ -214,7 +213,7 @@ def getTcpMessage(client, buffer, bufFlag):
 def getzipFile(neighborIp, file):
     client = socket(AF_INET, SOCK_STREAM)
     while True:
-        try:
+        # try:
             print('try to get zip file: '+ file+ ' from '+ neighborIp)
             client.connect((neighborIp, 23451))
             client.send(makeZipfile_header(file))
@@ -245,9 +244,9 @@ def getzipFile(neighborIp, file):
             os.remove(logname)
             break
 
-        except:
-            print('connection for zip has error!!!!!!!!!!!!!')
-            continue
+        # except:
+        #     print('connection for zip has error!!!!!!!!!!!!!')
+        #     continue
 
 def send_connections(neighborIp, file_list, requiredFile1_list):
     client = socket(AF_INET, SOCK_STREAM)
@@ -266,11 +265,13 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                     msg = msg+client.recv(header_length-len(msg))
                 fileDictionary = json.loads(msg.decode(), strict=False)
                 requiredFile_list = [file for file in fileDictionary.keys() if file not in file_list.keys()]
-                # print(requiredFile_list)
+                if requiredFile_list==[]:
+                    time.sleep(0.2)
                 for file in requiredFile_list:
                     if file not in requiredFile1_list:
                         requiredFile1_list.append(file)
                     else:
+                        time.sleep(0.04)
                         continue
                     print(file)
                     components = file.split('/')
@@ -281,7 +282,7 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                     lastfile = fileDictionary[file][0]
                     blockNum = fileDictionary[file][1]
                     if blockNum >120:
-                        askZipProcess = Process(target=getzipFile, args=(neighborIp,file,))
+                        askZipProcess = Thread(target=getzipFile, args=(neighborIp,file,))
                         askZipProcess.daemon = True
                         askZipProcess.start()
                         continue
@@ -388,14 +389,14 @@ def _argparse():
 
 if __name__ == '__main__':
     parser = _argparse()
-    print('IP:', type(parser.ip))
     neighbor_list=parser.ip.split(',')
-    print(neighbor_list)
     mgr = multiprocessing.Manager()
     file_list = mgr.dict()
     mgr1 = multiprocessing.Manager()
     requiredFile1_list = mgr1.list()
 
+    if not os.path.exists(file_dir):
+        os.mkdir(file_dir)
 
     serverProcess = Process(target=accept_connections, args=(file_list,))
     serverProcess.start() #start a server process to serve the connection from others
@@ -410,6 +411,9 @@ if __name__ == '__main__':
         for file in newFile_list:
             components = file.split('.')
             if components[-1]=='lefting':
+                continue
+            logname = file+'.log'
+            if os.path.exists(logname):
                 continue
             filepath = join(file_dir, file)
             if os.path.isdir(filepath):
