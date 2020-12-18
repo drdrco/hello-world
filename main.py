@@ -96,6 +96,8 @@ def msg_parse(msg, file_list, conn):
         conn.sendall(header)
         for i in range(total_block_number):
             conn.sendall(get_zip_block(zipname,i))
+        time.sleep(1)
+        conn.close()
         return 1
 
 def accept_message(conn, file_list):
@@ -114,6 +116,7 @@ def accept_message(conn, file_list):
 
         except:
             print('client connection error')
+            conn.close()
             break
 
 
@@ -242,6 +245,7 @@ def getzipFile(neighborIp, file):
             log.close()
             extractZip(file)
             os.remove(logname)
+            client.close()
             break
 
         # except:
@@ -266,12 +270,12 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                 fileDictionary = json.loads(msg.decode(), strict=False)
                 requiredFile_list = [file for file in fileDictionary.keys() if file not in file_list.keys()]
                 if requiredFile_list==[]:
-                    time.sleep(0.2)
+                    time.sleep(1)
                 for file in requiredFile_list:
                     if file not in requiredFile1_list:
                         requiredFile1_list.append(file)
                     else:
-                        time.sleep(0.04)
+                        time.sleep(0.2)
                         continue
                     print(file)
                     components = file.split('/')
