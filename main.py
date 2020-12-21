@@ -10,12 +10,19 @@ import multiprocessing
 from multiprocessing import Process
 import json
 import zipfile
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+from Crypto.Util.Padding import unpad
 
 port = 23451
 file_dir = 'share'
 block_size = 1024*1024*5
 neighbor_list = ['192.168.164.3','192.168.101.3']
 mtimeDic={}
+key = b'\xc4ZL\xd2\xdf\xee\xca<\xd4$\t\x14P\x18\xe3\x91'
+cipher = AES.new(key, AES.MODE_CBC)
+decryptcipher = AES.new(key, AES.MODE_CBC, cipher.iv)
+encrypt=False
 
 
 def get_file_size(filename):
@@ -40,7 +47,13 @@ def get_zip_block(filename, block_index):
 def make_file_block(filename, block_index):
     file_block = get_file_block(filename, block_index)
     header = struct.pack('!Q', block_index)
-    # print(filename, block_index)
+    if encrypt==True:
+        if len(file_block)%16 !=0:
+            encrypted_data = cipher.encrypt(pad(file_block, AES.block_size))
+        else:
+            encrypted_data = cipher.encrypt(file_block)
+        encryptlength=struct.pack('!Q', len(encrypted_data))
+        return header+encryptlength+encrypted_data
     return header + file_block
 
 
@@ -69,12 +82,12 @@ def msg_parse(msg, file_list, conn):
         block_index_from_client = struct.unpack('!Q', header_b[4:12])[0]
         filename = header_b[12:].decode()
         print('send file : ' + filename)
-        for i in range(block_index_from_client, math.ceil(get_file_size(filename) / block_size)):
+        for i in range(block_index_from_client, math.ceil(get_file_size(filename) / block_size)-1):
             conn.sendall(make_file_block(filename, i))
             print(filename+ ' blockNumber: '+str(i)+' is sent!')
         print(filename+' is all sent to peers!!')
         print('************************')
-        return 1
+        return make_file_block(filename,math.ceil(get_file_size(filename) / block_size)-1 )
     if client_operation_code == 3:  # partial update the file
         endpoint = struct.unpack('!Q', header_b[4:12])[0]
         filename = header_b[12:].decode()
@@ -113,6 +126,9 @@ def accept_message(conn, file_list):
             return_msg = msg_parse(msg, file_list, conn)
             if return_msg != 1:
                 conn.send(return_msg)
+            if return_msg==1:
+                conn.close()
+                break
 
         except:
             print('client connection error')
@@ -129,7 +145,7 @@ def accept_connections(file_list):
     while True:
         try:
             conn, address = server.accept()
-            t = Thread(target=accept_message, args=(conn, file_list,))
+            t = Process(target=accept_message, args=(conn, file_list,))
             t.start()
         except:
             print('server connection error')
@@ -192,32 +208,12 @@ def extractZip(file):
 
 
 
-
-
-def getTcpMessage(client, buffer, bufFlag):
-    if bufFlag == 1:
-        msg = buffer
-        print('using the buffer')
-    else:
-        msg = client.recv(20)
-    header_length_b = msg[:4]
-    header_length = struct.unpack('!I', header_length_b)[0]
-    while len(msg) < header_length + 4:
-        msg = msg + client.recv(header_length + 4 - len(msg))
-    if len(msg) <= header_length + 4:
-        bufFlag = 0
-    else:
-        bufFlag = 1
-        buffer = msg[header_length + 4:]
-        msg = msg[: header_length + 4]
-    return msg, buffer, bufFlag
-
-
 def getzipFile(neighborIp, file):
     client = socket(AF_INET, SOCK_STREAM)
     while True:
-        # try:
+        try:
             print('try to get zip file: '+ file+ ' from '+ neighborIp)
+            oldt=time.time()
             client.connect((neighborIp, 23451))
             client.send(makeZipfile_header(file))
             msg=client.recv(12)
@@ -239,7 +235,9 @@ def getzipFile(neighborIp, file):
                 content = content + client.recv(lastfile - len(content))
             f.write(content)
             f.close()
-            print(file+".zip download is completed")
+            newt=time.time()
+            wholet=newt-oldt
+            print(file+".zip download is completed, using time: "+str(wholet))
             logname = file+'.log'
             log=open(logname, 'w')
             log.close()
@@ -248,9 +246,9 @@ def getzipFile(neighborIp, file):
             client.close()
             break
 
-        # except:
-        #     print('connection for zip has error!!!!!!!!!!!!!')
-        #     continue
+        except:
+            print('connection for zip has error!!!!!!!!!!!!!')
+            continue
 
 def send_connections(neighborIp, file_list, requiredFile1_list):
     client = socket(AF_INET, SOCK_STREAM)
@@ -270,12 +268,12 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                 fileDictionary = json.loads(msg.decode(), strict=False)
                 requiredFile_list = [file for file in fileDictionary.keys() if file not in file_list.keys()]
                 if requiredFile_list==[]:
-                    time.sleep(1)
+                    time.sleep(1.5)
                 for file in requiredFile_list:
                     if file not in requiredFile1_list:
                         requiredFile1_list.append(file)
                     else:
-                        time.sleep(0.2)
+                        time.sleep(0.5)
                         continue
                     print(file)
                     components = file.split('/')
@@ -309,7 +307,7 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                             print('BLock index: ' + str(block_index) + ' of file: ' + file + ' from peer: ' + neighborIp + ' is done')
 
                         # last package:
-                        msg = client.recv(block_size + 24)
+                        msg = client.recv(lastfile+8)
                         while len(msg) < lastfile + 8:
                             msg += client.recv(lastfile + 8 - len(msg))
                         block_index = struct.unpack('!Q', msg[:8])[0]
@@ -323,34 +321,59 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                     else:
                             with open(join(file_dir, leftingname), 'wb')as f:
                                 client.send(make_get_fil_block_header(file, 0))
-
+                                oldt = time.time()
                                 for block in range(0, blockNum - 1):
-                                    msg = client.recv(8 + block_size)
-                                    while len(msg) < 8 + block_size:
-                                        msg = msg + client.recv(8 + block_size - len(msg))
-                                    block_index = struct.unpack('!Q', msg[:8])[0]
-                                    blockFile = msg[8:]
+                                    if encrypt==True:
+                                        msg = client.recv(16)
+                                        while len(msg) < 16 :
+                                            msg = msg + client.recv(16- len(msg))
+                                        block_index = struct.unpack('!Q', msg[:8])[0]
+                                        data_length=struct.unpack('!Q', msg[8:16])[0]
+                                        blockFile = client.recv(data_length)
+                                        while len(blockFile) < data_length:
+                                            blockFile = blockFile + client.recv(data_length - len(blockFile))
+                                        blockFile = decryptcipher.decrypt(blockFile)
+                                    else:
+                                        msg = client.recv(8 + block_size)
+                                        while len(msg) < 8 + block_size:
+                                            msg = msg + client.recv(8 + block_size - len(msg))
+                                        block_index = struct.unpack('!Q', msg[:8])[0]
+                                        blockFile = msg[8:]
                                     f.write(blockFile)
                                     # f.flush()
                                     print('BLock index: '+str(block_index)+ ' of file: '+file+ ' from peer: '+neighborIp+' is done')
 
                                 # last package:
-                                msg = client.recv(block_size + 24)
-                                while len(msg) < lastfile + 8:
-                                    msg += client.recv(lastfile + 8 - len(msg))
+                                if encrypt == True:
+                                    msg = client.recv(16)
+                                    while len(msg) < 16:
+                                        msg = msg + client.recv(16 - len(msg))
+                                    data_length = struct.unpack('!Q', msg[8:16])[0]
+                                    print(data_length)
+                                    blockFile = client.recv(data_length)
+                                    while len(blockFile) < data_length:
+                                        blockFile = blockFile + client.recv(data_length - len(blockFile))
+                                    blockFile = unpad(decryptcipher.decrypt(blockFile), AES.block_size)
+                                else:
+                                    msg = client.recv(lastfile+8)
+                                    while len(msg) < lastfile + 8:
+                                        msg += client.recv(lastfile + 8 - len(msg))
                                 # block_index = struct.unpack('!Q', msg[:8])[0]
-                                blockFile = msg[8:]
+                                    blockFile = msg[8:]
                                 f.write(blockFile)
                                 f.close()
+                                newt = time.time()
+                                wholetime = newt-oldt
                                 file_list[file] = [lastfile,blockNum,0,fileDictionary[file][3]]
                                 os.rename(join(file_dir,leftingname),join(file_dir,file))
-                                print('File downloading: '+file+' from peer: '+neighborIp+' is completed!!!!!!')
+                                print('File downloading: '+file+' from peer: '+neighborIp+' is completed, using time: '+str(wholetime))
                                 print('##########################################')
 
                 for mfile in fileDictionary.keys():
                     if fileDictionary[mfile][2]==1:
                         if file_list[mfile][2] != fileDictionary[mfile][2]:
                             print('Need update for file: '+mfile+ ' from peer: '+neighborIp)
+                            oldt = time.time()
                             update = fileDictionary[mfile][3]
                             f = open(join(file_dir, mfile), 'rb+')
                             f.seek(0)
@@ -360,10 +383,12 @@ def send_connections(neighborIp, file_list, requiredFile1_list):
                                 msg += client.recv(update- len(msg))
                             f.write(msg)
                             f.close()
+                            newt = time.time()
+                            wholetime=newt-oldt
                             newlist = file_list[mfile]
                             newlist[2] = 1
                             file_list[mfile] = newlist
-                            print('Successfully update file: '+mfile+ ' from peer: '+neighborIp)
+                            print('Successfully update file: '+mfile+ ' from peer: '+neighborIp+' using time: '+str(wholetime))
 
             except:
                 print('connection with server:' + neighborIp + 'has an error, delete the connection')
@@ -387,12 +412,14 @@ def _argparse():
     parser = argparse.ArgumentParser(description="This is description!")
     parser.add_argument('--ip', action='store', required=True,
     dest='ip', help='The ip address of the neighbors')
-    # parser.add_argument('--server', action='store', required=True,
-    # dest='server', help='The hostname of server')
+    parser.add_argument('--encryption', action='store', required=False,
+    dest='encryption', help='The hostname of server')
     return parser.parse_args()
 
 if __name__ == '__main__':
     parser = _argparse()
+    if parser.encryption=='yes':
+        encrypt=True
     neighbor_list=parser.ip.split(',')
     mgr = multiprocessing.Manager()
     file_list = mgr.dict()
